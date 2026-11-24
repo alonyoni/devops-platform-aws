@@ -1,0 +1,346 @@
+---
+# PrometheusRule: Custom Alerting Rules
+# Covers: infrastructure, Kubernetes, application SLOs, CI/CD, security
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: devops-platform-alert-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: devops-platform
+    app.kubernetes.io/component: monitoring
+    release: kube-prometheus-stack
+spec:
+  groups:
+
+    # ------------------------------------------------------------------
+    - name: node.alerts
+    # ------------------------------------------------------------------
+      rules:
+        - alert: NodeHighCPU
+          expr: instance:node_cpu_utilisation:rate5m > 0.85
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Node {{ $labels.instance }} CPU high"
+            description: "Node {{ $labels.instance }} CPU utilization is {{ $value | humanizePercentage }} (threshold: 85%) for 10 minutes."
+            runbook: "https://wiki.devops-platform.internal/runbooks/node-high-cpu"
+
+        - alert: NodeCriticalCPU
+          expr: instance:node_cpu_utilisation:rate5m > 0.95
+          for: 5m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Node {{ $labels.instance }} CPU critical"
+            description: "Node {{ $labels.instance }} CPU utilization is {{ $value | humanizePercentage }}."
+
+        - alert: NodeHighMemory
+          expr: instance:node_memory_utilisation:ratio > 0.85
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Node {{ $labels.instance }} memory high"
+            description: "Node {{ $labels.instance }} memory utilization is {{ $value | humanizePercentage }}."
+
+        - alert: NodeDiskPressure
+          expr: |
+            (
+              node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs"}
+              / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs"}
+            ) < 0.15
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Node {{ $labels.instance }} disk space low"
+            description: "Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} has {{ $value | humanizePercentage }} free."
+
+        - alert: NodeDiskCritical
+          expr: |
+            (
+              node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs"}
+              / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs"}
+            ) < 0.05
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Node {{ $labels.instance }} disk space critical"
+            description: "Filesystem {{ $labels.mountpoint }} has only {{ $value | humanizePercentage }} free."
+
+        - alert: NodeDown
+          expr: up{job="node-exporter"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Node exporter down on {{ $labels.instance }}"
+            description: "Node {{ $labels.instance }} has been unreachable for 2 minutes."
+
+    # ------------------------------------------------------------------
+    - name: kubernetes.alerts
+    # ------------------------------------------------------------------
+      rules:
+        - alert: PodCrashLooping
+          expr: |
+            rate(kube_pod_container_status_restarts_total[15m]) * 60 * 15 > 0
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash-looping"
+            description: "Container {{ $labels.container }} in pod {{ $labels.pod }} ({{ $labels.namespace }}) has restarted {{ $value }} times in the last 15 minutes."
+            runbook: "https://wiki.devops-platform.internal/runbooks/pod-crashlooping"
+
+        - alert: PodNotReady
+          expr: |
+            sum by (namespace, pod) (
+              max by (namespace, pod, condition) (
+                kube_pod_status_conditions{condition="Ready", status="true"}
+              ) == 0
+            ) * on (namespace, pod) group_left(node) kube_pod_info
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} not ready"
+            description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been in a non-ready state for 10 minutes."
+
+        - alert: DeploymentReplicasMismatch
+          expr: |
+            kube_deployment_spec_replicas
+            != kube_deployment_status_replicas_available
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} replica mismatch"
+            description: "Deployment {{ $labels.deployment }} has {{ $value }} available replicas, expected {{ $labels.desired }}."
+
+        - alert: PersistentVolumeClaimPending
+          expr: kube_persistentvolumeclaim_status_phase{phase="Pending"} == 1
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} pending"
+            description: "PersistentVolumeClaim {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} has been Pending for 5 minutes."
+
+        - alert: PersistentVolumeFull
+          expr: |
+            (
+              kubelet_volume_stats_available_bytes
+              / kubelet_volume_stats_capacity_bytes
+            ) < 0.15
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "PersistentVolume {{ $labels.persistentvolumeclaim }} almost full"
+            description: "PVC {{ $labels.persistentvolumeclaim }} in {{ $labels.namespace }} is {{ $value | humanizePercentage }} full."
+
+        - alert: HorizontalPodAutoscalerMaxed
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas
+            >= kube_horizontalpodautoscaler_spec_max_replicas
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} at max replicas"
+            description: "HPA {{ $labels.horizontalpodautoscaler }} has been at maximum replicas for 15 minutes. Consider scaling up."
+
+        - alert: NamespaceQuotaAlmostFull
+          expr: |
+            (
+              kube_resourcequota{type="used"}
+              / kube_resourcequota{type="hard"}
+            ) > 0.85
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Namespace {{ $labels.namespace }} quota {{ $labels.resource }} almost full"
+            description: "Namespace {{ $labels.namespace }} is using {{ $value | humanizePercentage }} of quota for {{ $labels.resource }}."
+
+    # ------------------------------------------------------------------
+    - name: application.slo.alerts
+    # ------------------------------------------------------------------
+      rules:
+        - alert: AppHighErrorRate
+          expr: job:http_error_ratio:rate5m{namespace=~"app-.*"} > 0.05
+          for: 5m
+          labels:
+            severity: warning
+            team: application
+          annotations:
+            summary: "High error rate in {{ $labels.namespace }}"
+            description: "Application in {{ $labels.namespace }} has {{ $value | humanizePercentage }} error rate (threshold: 5%)."
+            runbook: "https://wiki.devops-platform.internal/runbooks/high-error-rate"
+
+        - alert: AppCriticalErrorRate
+          expr: job:http_error_ratio:rate5m{namespace=~"app-.*"} > 0.10
+          for: 2m
+          labels:
+            severity: critical
+            team: application
+          annotations:
+            summary: "Critical error rate in {{ $labels.namespace }}"
+            description: "Application in {{ $labels.namespace }} has {{ $value | humanizePercentage }} error rate."
+
+        - alert: AppHighLatencyP99
+          expr: job:http_request_duration_seconds:p99{namespace=~"app-.*"} > 2.0
+          for: 5m
+          labels:
+            severity: warning
+            team: application
+          annotations:
+            summary: "High p99 latency in {{ $labels.namespace }}"
+            description: "p99 request latency in {{ $labels.namespace }} is {{ $value }}s (threshold: 2s)."
+
+        - alert: AppHighLatencyP95
+          expr: job:http_request_duration_seconds:p95{namespace=~"app-.*"} > 1.0
+          for: 10m
+          labels:
+            severity: warning
+            team: application
+          annotations:
+            summary: "High p95 latency in {{ $labels.namespace }}"
+            description: "p95 request latency in {{ $labels.namespace }} is {{ $value }}s (threshold: 1s)."
+
+        - alert: AppDown
+          expr: |
+            sum by (namespace, job) (
+              up{namespace=~"app-.*"}
+            ) == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: application
+          annotations:
+            summary: "Application {{ $labels.namespace }} is completely down"
+            description: "All instances of {{ $labels.job }} in {{ $labels.namespace }} are unreachable."
+
+        - alert: AppNoTraffic
+          expr: |
+            sum by (namespace) (
+              rate(http_requests_total{namespace=~"app-prod"}[10m])
+            ) == 0
+          for: 10m
+          labels:
+            severity: warning
+            team: application
+          annotations:
+            summary: "No traffic to app-prod for 10 minutes"
+            description: "Production app is receiving zero traffic. Check load balancer and ingress."
+
+    # ------------------------------------------------------------------
+    - name: cicd.alerts
+    # ------------------------------------------------------------------
+      rules:
+        - alert: JenkinsDown
+          expr: up{job="jenkins"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Jenkins is down"
+            description: "Jenkins has been unreachable for 2 minutes. CI/CD pipeline is unavailable."
+
+        - alert: ArgoCDAppOutOfSync
+          expr: |
+            argocd_app_info{sync_status!="Synced"} == 1
+          for: 15m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "ArgoCD app {{ $labels.name }} is out of sync"
+            description: "ArgoCD application {{ $labels.name }} in project {{ $labels.project }} has been out of sync for 15 minutes."
+
+        - alert: ArgoCDAppUnhealthy
+          expr: |
+            argocd_app_info{health_status!~"Healthy|Progressing"} == 1
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "ArgoCD app {{ $labels.name }} health is {{ $labels.health_status }}"
+            description: "ArgoCD application {{ $labels.name }} has been in {{ $labels.health_status }} state for 10 minutes."
+
+        - alert: ArgoCDSyncFailed
+          expr: |
+            argocd_app_info{operation_state_phase="Failed"} == 1
+          for: 1m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "ArgoCD app {{ $labels.name }} sync failed"
+            description: "ArgoCD application {{ $labels.name }} failed to sync."
+
+    # ------------------------------------------------------------------
+    - name: prometheus.alerts
+    # ------------------------------------------------------------------
+      rules:
+        - alert: PrometheusDown
+          expr: up{job="prometheus"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Prometheus is down"
+            description: "Prometheus has been unreachable for 2 minutes. Monitoring is unavailable."
+
+        - alert: PrometheusStorageFull
+          expr: |
+            (
+              prometheus_tsdb_storage_blocks_bytes
+              / prometheus_tsdb_head_chunks_storage_size_bytes
+            ) > 0.85
+          for: 10m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Prometheus TSDB storage almost full"
+            description: "Prometheus storage is {{ $value | humanizePercentage }} full."
+
+        - alert: AlertmanagerDown
+          expr: up{job="alertmanager"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Alertmanager is down"
+            description: "Alertmanager has been unreachable for 2 minutes. Alerts will not be delivered."
+
+        - alert: GrafanaDown
+          expr: up{job="grafana"} == 0
+          for: 5m
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Grafana is down"
+            description: "Grafana has been unreachable for 5 minutes."

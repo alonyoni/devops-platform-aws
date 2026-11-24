@@ -1,0 +1,115 @@
+---
+# PrometheusRule: Recording Rules
+# Pre-compute expensive queries as new time series for fast dashboard loading
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: devops-platform-recording-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: devops-platform
+    app.kubernetes.io/component: monitoring
+    release: kube-prometheus-stack    # Must match Prometheus ruleSelector
+spec:
+  groups:
+
+    # ------------------------------------------------------------------
+    - name: node.recording
+    # ------------------------------------------------------------------
+      interval: 60s
+      rules:
+        - record: instance:node_cpu_utilisation:rate5m
+          expr: |
+            1 - avg without (cpu) (
+              sum without (mode) (rate(node_cpu_seconds_total{job="node-exporter", mode=~"idle|iowait|steal"}[5m]))
+            )
+
+        - record: instance:node_memory_utilisation:ratio
+          expr: |
+            1 - (
+              node_memory_MemAvailable_bytes{job="node-exporter"}
+              /
+              node_memory_MemTotal_bytes{job="node-exporter"}
+            )
+
+        - record: instance:node_network_receive_bytes_excluding_lo:rate5m
+          expr: sum without (device) (rate(node_network_receive_bytes_total{job="node-exporter", device!="lo"}[5m]))
+
+        - record: instance:node_network_transmit_bytes_excluding_lo:rate5m
+          expr: sum without (device) (rate(node_network_transmit_bytes_total{job="node-exporter", device!="lo"}[5m]))
+
+        - record: instance:node_disk_io_time_seconds:rate5m
+          expr: sum without (device) (rate(node_disk_io_time_seconds_total{job="node-exporter", device=~"nvme.+|rbd.+|sd.+|vd.+|xvd.+|dm-.+"}[5m]))
+
+    # ------------------------------------------------------------------
+    - name: kubernetes.recording
+    # ------------------------------------------------------------------
+      interval: 60s
+      rules:
+        - record: namespace:container_cpu_usage_seconds_total:sum_rate
+          expr: |
+            sum by (namespace) (
+              rate(container_cpu_usage_seconds_total{job="kubelet", image!="", container!=""}[5m])
+            )
+
+        - record: namespace:container_memory_usage_bytes:sum
+          expr: |
+            sum by (namespace) (
+              container_memory_working_set_bytes{job="kubelet", image!="", container!=""}
+            )
+
+        - record: pod:container_cpu_usage_seconds_total:sum_rate
+          expr: |
+            sum by (namespace, pod) (
+              rate(container_cpu_usage_seconds_total{job="kubelet", image!="", container!=""}[5m])
+            )
+
+        - record: pod:container_memory_working_set_bytes:sum
+          expr: |
+            sum by (namespace, pod) (
+              container_memory_working_set_bytes{job="kubelet", image!="", container!=""}
+            )
+
+    # ------------------------------------------------------------------
+    - name: application.recording
+    # ------------------------------------------------------------------
+      interval: 30s
+      rules:
+        - record: job:http_requests_total:rate5m
+          expr: sum by (job, namespace, status) (rate(http_requests_total[5m]))
+
+        - record: job:http_request_duration_seconds:p99
+          expr: |
+            histogram_quantile(0.99,
+              sum by (job, namespace, le) (
+                rate(http_request_duration_seconds_bucket[5m])
+              )
+            )
+
+        - record: job:http_request_duration_seconds:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum by (job, namespace, le) (
+                rate(http_request_duration_seconds_bucket[5m])
+              )
+            )
+
+        - record: job:http_request_duration_seconds:p50
+          expr: |
+            histogram_quantile(0.50,
+              sum by (job, namespace, le) (
+                rate(http_request_duration_seconds_bucket[5m])
+              )
+            )
+
+        - record: job:http_errors_total:rate5m
+          expr: |
+            sum by (job, namespace) (
+              rate(http_requests_total{status=~"5.."}[5m])
+            )
+
+        - record: job:http_error_ratio:rate5m
+          expr: |
+            job:http_errors_total:rate5m
+            /
+            job:http_requests_total:rate5m

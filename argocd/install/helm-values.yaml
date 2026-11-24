@@ -1,0 +1,374 @@
+## ArgoCD Helm Chart Values
+## Chart: argo/argo-cd  Version: 6.7.2
+## https://github.com/argoproj/argo-helm
+
+global:
+  image:
+    tag: "v2.10.1"
+
+# -------------------------------------------------------------------
+# ArgoCD Server
+# -------------------------------------------------------------------
+server:
+  replicas: 2
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Run without TLS termination at the server — let ingress handle TLS
+  extraArgs:
+    - --insecure
+
+  service:
+    type: ClusterIP
+
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    hostname: argocd.devops-platform.internal
+    tls: true
+    extraTls:
+      - hosts:
+          - argocd.devops-platform.internal
+        secretName: argocd-tls
+
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      namespace: monitoring
+      additionalLabels:
+        release: kube-prometheus-stack
+
+  # Node placement
+  nodeSelector:
+    role: system
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8083"
+
+# -------------------------------------------------------------------
+# Application Controller
+# -------------------------------------------------------------------
+controller:
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      namespace: monitoring
+      additionalLabels:
+        release: kube-prometheus-stack
+
+  nodeSelector:
+    role: system
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+
+# -------------------------------------------------------------------
+# Repo Server
+# -------------------------------------------------------------------
+repoServer:
+  replicas: 2
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      namespace: monitoring
+      additionalLabels:
+        release: kube-prometheus-stack
+
+  nodeSelector:
+    role: system
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+
+  # Install Helm secrets plugin for encrypted values (optional)
+  volumes:
+    - name: custom-tools
+      emptyDir: {}
+
+  initContainers:
+    - name: download-tools
+      image: alpine:3.18
+      command: [sh, -c]
+      args:
+        - |
+          # Install helm-secrets plugin dependencies (sops)
+          wget -qO /custom-tools/sops \
+            https://github.com/getsops/sops/releases/download/v3.8.1/sops-v3.8.1.linux.amd64
+          chmod +x /custom-tools/sops
+      volumeMounts:
+        - mountPath: /custom-tools
+          name: custom-tools
+
+  volumeMounts:
+    - mountPath: /usr/local/bin/sops
+      name: custom-tools
+      subPath: sops
+
+# -------------------------------------------------------------------
+# ApplicationSet Controller
+# -------------------------------------------------------------------
+applicationSet:
+  enabled: true
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      namespace: monitoring
+      additionalLabels:
+        release: kube-prometheus-stack
+
+  nodeSelector:
+    role: system
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+
+# -------------------------------------------------------------------
+# Notifications Controller
+# -------------------------------------------------------------------
+notifications:
+  enabled: true
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+  nodeSelector:
+    role: system
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+
+  # Notification templates (Slack + email)
+  notifiers:
+    service.slack: |
+      token: $slack-token
+
+  templates:
+    template.app-deployed: |
+      message: |
+        :white_check_mark: Application *{{.app.metadata.name}}* deployed successfully!
+        *Revision:* {{.app.status.sync.revision}}
+        *Environment:* {{.app.metadata.labels.environment}}
+      slack:
+        attachments: |
+          [{
+            "title": "{{.app.metadata.name}}",
+            "title_link": "{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+            "color": "#18be52",
+            "fields": [
+              {"title": "Sync Status", "value": "{{.app.status.sync.status}}", "short": true},
+              {"title": "Health Status", "value": "{{.app.status.health.status}}", "short": true},
+              {"title": "Repository", "value": "{{.app.spec.source.repoURL}}", "short": false}
+            ]
+          }]
+
+    template.app-sync-failed: |
+      message: |
+        :x: Application *{{.app.metadata.name}}* sync failed!
+        *Error:* {{.app.status.operationState.message}}
+      slack:
+        attachments: |
+          [{
+            "title": "{{.app.metadata.name}}",
+            "title_link": "{{.context.argocdUrl}}/applications/{{.app.metadata.name}}",
+            "color": "#E96D76",
+            "fields": [
+              {"title": "Sync Status", "value": "{{.app.status.sync.status}}", "short": true},
+              {"title": "Health Status", "value": "{{.app.status.health.status}}", "short": true},
+              {"title": "Error", "value": "{{.app.status.operationState.message}}", "short": false}
+            ]
+          }]
+
+    template.app-health-degraded: |
+      message: |
+        :warning: Application *{{.app.metadata.name}}* health is degraded!
+        *Status:* {{.app.status.health.status}}
+      slack:
+        attachments: |
+          [{
+            "title": "{{.app.metadata.name}}",
+            "color": "#f4c030",
+            "fields": [
+              {"title": "Health Status", "value": "{{.app.status.health.status}}", "short": true},
+              {"title": "Environment", "value": "{{.app.metadata.labels.environment}}", "short": true}
+            ]
+          }]
+
+  triggers:
+    trigger.on-deployed: |
+      - description: Notify when application is synced and healthy
+        oncePer: app.status.operationState.syncResult.revision
+        send:
+          - app-deployed
+        when: app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+
+    trigger.on-sync-failed: |
+      - description: Notify when application sync fails
+        oncePer: app.status.operationState.syncResult.revision
+        send:
+          - app-sync-failed
+        when: app.status.operationState.phase in ['Error', 'Failed']
+
+    trigger.on-health-degraded: |
+      - description: Notify when application health degrades
+        send:
+          - app-health-degraded
+        when: app.status.health.status == 'Degraded'
+
+  subscriptions: |
+    - recipients:
+        - slack:#devops-alerts
+      triggers:
+        - on-deployed
+        - on-sync-failed
+        - on-health-degraded
+
+# -------------------------------------------------------------------
+# ArgoCD ConfigMap — argocd-cm
+# -------------------------------------------------------------------
+configs:
+  cm:
+    # Allow applications to sync automatically
+    application.resourceTrackingMethod: annotation
+
+    # Helm configuration
+    helm.valuesFileSchemes: "https,http"
+
+    # GitHub integration (replace with your org)
+    url: "https://argocd.devops-platform.internal"
+
+    # OIDC / SSO (optional — uncomment and configure for production)
+    # oidc.config: |
+    #   name: GitHub
+    #   issuer: https://github.com
+    #   clientID: $oidc.github.clientID
+    #   clientSecret: $oidc.github.clientSecret
+    #   requestedScopes: ["user:email"]
+    #   requestedIDTokenClaims:
+    #     email:
+    #       essential: true
+
+    # Resource health checks
+    resource.customizations.health.argoproj.io_Application: |
+      hs = {}
+      hs.status = "Progressing"
+      hs.message = ""
+      if obj.status ~= nil then
+        if obj.status.health ~= nil then
+          hs.status = obj.status.health.status
+          if obj.status.health.message ~= nil then
+            hs.message = obj.status.health.message
+          end
+        end
+      end
+      return hs
+
+  # RBAC policy
+  rbac:
+    policy.default: role:readonly
+    policy.csv: |
+      # Admins can do everything
+      p, role:admin, applications, *, */*, allow
+      p, role:admin, clusters, get, *, allow
+      p, role:admin, repositories, *, *, allow
+      p, role:admin, logs, get, *, allow
+      p, role:admin, exec, create, */*, allow
+
+      # Developers can sync and get in their team namespaces
+      p, role:developer, applications, get, */*, allow
+      p, role:developer, applications, sync, */*, allow
+      p, role:developer, applications, override, */*, allow
+      p, role:developer, logs, get, */*, allow
+
+      # CI (Jenkins) can sync applications
+      p, role:ci-bot, applications, sync, */*, allow
+      p, role:ci-bot, applications, get, */*, allow
+
+      # Group bindings (GitHub teams)
+      g, your-org:platform-team, role:admin
+      g, your-org:dev-team, role:developer
+      g, jenkins, role:ci-bot
+
+    scopes: "[groups, email]"
+
+  # Repository credentials (GitHub — stored as Kubernetes secret)
+  credentialTemplates:
+    github-https:
+      url: https://github.com/your-org
+      username: git
+      password: $github-token
+
+  repositories:
+    devops-platform-gitops:
+      url: https://github.com/your-org/devops-platform-gitops
+      name: gitops-repo
+      type: git
+
+# -------------------------------------------------------------------
+# Redis HA (use single Redis for dev; HA for prod)
+# -------------------------------------------------------------------
+redis:
+  enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  nodeSelector:
+    role: system
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists

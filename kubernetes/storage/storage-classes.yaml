@@ -1,0 +1,77 @@
+---
+# StorageClass: gp3 (default) — General purpose SSD, best price/performance
+# Used for: Jenkins home, Prometheus data, general workloads
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+  labels:
+    app.kubernetes.io/component: storage
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  iops: "3000"
+  throughput: "125"
+  encrypted: "true"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+
+---
+# StorageClass: gp3-retain — same as gp3 but retains volume after PVC deletion
+# Used for: production databases, important stateful workloads
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3-retain
+  labels:
+    app.kubernetes.io/component: storage
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  iops: "3000"
+  throughput: "125"
+  encrypted: "true"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+
+---
+# StorageClass: io2 — Provisioned IOPS SSD, high performance
+# Used for: high-throughput databases in production
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: io2-high-perf
+  labels:
+    app.kubernetes.io/component: storage
+provisioner: ebs.csi.aws.com
+parameters:
+  type: io2
+  iops: "10000"
+  encrypted: "true"
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+
+---
+# StorageClass: efs-sc — EFS for shared/ReadWriteMany workloads
+# Requires aws-efs-csi-driver to be installed
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: efs-sc
+  labels:
+    app.kubernetes.io/component: storage
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: fs-CHANGEME          # Replace with your EFS file system ID
+  directoryPerms: "700"
+  gidRangeStart: "1000"
+  gidRangeEnd: "2000"
+  basePath: "/dynamic_provisioning"
+reclaimPolicy: Delete
+volumeBindingMode: Immediate

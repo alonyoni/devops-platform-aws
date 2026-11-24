@@ -1,0 +1,160 @@
+#!/usr/bin/env groovy
+/**
+ * PR Validation Pipeline
+ * Runs fast checks on every pull request:
+ *   - Lint
+ *   - Unit tests
+ *   - Build Docker image (no push)
+ *   - Trivy scan
+ *
+ * Designed to complete in under 10 minutes.
+ */
+
+pipeline {
+
+    agent {
+        kubernetes {
+            label "pr-validator"
+            yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins
+  containers:
+    - name: jnlp
+      image: jenkins/inbound-agent:latest-jdk17
+      resources:
+        requests:
+          cpu: 200m
+          memory: 256Mi
+    - name: docker
+      image: docker:24-dind
+      securityContext:
+        privileged: true
+      env:
+        - name: DOCKER_TLS_CERTDIR
+          value: ""
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+    - name: tools
+      image: alpine/k8s:1.29.2
+      command: [sleep]
+      args: [infinity]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+"""
+        }
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: "10"))
+        timeout(time: 15, unit: "MINUTES")
+        timestamps()
+        ansiColor("xterm")
+        disableConcurrentBuilds(abortPrevious: true)
+    }
+
+    environment {
+        AWS_REGION    = "us-east-1"
+        AWS_ACCOUNT_ID = credentials("aws-account-id")
+        ECR_REGISTRY  = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+    }
+
+    stages {
+
+        stage("Checkout") {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage("Lint") {
+            steps {
+                container("tools") {
+                    dir("app") {
+                        sh """
+                            echo "==> Running linter"
+                            if [ -f package.json ]; then
+                                npm ci --quiet
+                                npm run lint || true
+                            fi
+                            if [ -f .hadolint.yaml ] || [ -f Dockerfile ]; then
+                                hadolint Dockerfile || true
+                            fi
+                        """
+                    }
+                }
+            }
+        }
+
+        stage("Unit Tests") {
+            steps {
+                container("tools") {
+                    dir("app") {
+                        sh """
+                            if [ -f package.json ]; then
+                                npm test -- --watchAll=false --ci --coverage
+                            fi
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: "app/**/test-results/**/*.xml"
+                }
+            }
+        }
+
+        stage("Build Image (no push)") {
+            steps {
+                container("docker") {
+                    dir("app") {
+                        sh """
+                            SHORT_SHA=\$(git rev-parse --short HEAD)
+                            docker build \
+                              --tag devops-platform/app:pr-\${SHORT_SHA} \
+                              .
+                            echo "==> Build succeeded: devops-platform/app:pr-\${SHORT_SHA}"
+                        """
+                    }
+                }
+            }
+        }
+
+        stage("Trivy Scan") {
+            steps {
+                container("docker") {
+                    sh """
+                        SHORT_SHA=\$(git rev-parse --short HEAD)
+                        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-64bit.tar.gz \
+                          | tar xz -C /usr/local/bin trivy
+                        trivy image \
+                          --exit-code 1 \
+                          --severity HIGH,CRITICAL \
+                          --ignore-unfixed \
+                          devops-platform/app:pr-\${SHORT_SHA}
+                    """
+                }
+            }
+        }
+
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            echo "PR validation passed. Ready to merge."
+        }
+        failure {
+            echo "PR validation failed. Please fix issues before merging."
+        }
+    }
+
+}

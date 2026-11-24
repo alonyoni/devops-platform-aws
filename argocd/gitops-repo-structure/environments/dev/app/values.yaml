@@ -1,0 +1,71 @@
+# GitOps values for app in dev environment
+# Jenkins CI updates image.tag automatically on every successful build.
+# DO NOT edit image.tag manually — it will be overwritten by the pipeline.
+
+replicaCount: 2
+
+image:
+  repository: "123456789012.dkr.ecr.us-east-1.amazonaws.com/devops-platform/app"
+  tag: "latest"          # <- Jenkins updates this value
+  pullPolicy: Always
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  host: app-dev.devops-platform.internal
+  tls: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+env:
+  - name: NODE_ENV
+    value: "development"
+  - name: LOG_LEVEL
+    value: "debug"
+  - name: PORT
+    value: "8080"
+
+configMap:
+  APP_NAME: "devops-platform-app"
+  ENVIRONMENT: "dev"
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8080
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  failureThreshold: 3
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+global:
+  environment: dev

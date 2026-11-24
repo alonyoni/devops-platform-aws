@@ -1,0 +1,36 @@
+---
+# Ingress for ArgoCD UI
+# ArgoCD server runs with --insecure flag; TLS is terminated at nginx
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-server
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/component: ingress
+  annotations:
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # Prevent CSRF issues with ArgoCD
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: SAMEORIGIN";
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - argocd.devops-platform.internal
+      secretName: argocd-tls
+  rules:
+    - host: argocd.devops-platform.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 80

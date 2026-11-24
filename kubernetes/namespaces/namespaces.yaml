@@ -1,0 +1,68 @@
+---
+# Namespace: jenkins
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: jenkins
+  labels:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/component: ci-cd
+    environment: platform
+    monitoring: "true"
+
+---
+# Namespace: argocd
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    app.kubernetes.io/name: argocd
+    app.kubernetes.io/component: gitops
+    environment: platform
+    monitoring: "true"
+
+---
+# Namespace: monitoring
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/name: monitoring
+    app.kubernetes.io/component: observability
+    environment: platform
+    monitoring: "true"
+
+---
+# Namespace: app (sample application - dev)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app-dev
+  labels:
+    app.kubernetes.io/name: app
+    environment: dev
+    monitoring: "true"
+
+---
+# Namespace: app (sample application - prod)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app-prod
+  labels:
+    app.kubernetes.io/name: app
+    environment: prod
+    monitoring: "true"
+
+---
+# Namespace: ingress-nginx
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-nginx
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: networking
+    environment: platform

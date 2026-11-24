@@ -1,0 +1,110 @@
+---
+# ApplicationSet: Application Environments (Matrix Generator)
+#
+# Uses a Matrix generator combining:
+#   - List generator: environments (dev, prod)
+#   - Git generator:  discovers apps in the environments/ directory
+#
+# GitOps repo layout:
+#   environments/
+#     dev/
+#       app/
+#         values.yaml    ← Jenkins updates image.tag here
+#     prod/
+#       app/
+#         values.yaml
+
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: application-environments
+  namespace: argocd
+  labels:
+    app.kubernetes.io/component: gitops
+    tier: applications
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+
+  generators:
+    - matrix:
+        generators:
+          # Generator 1: environments
+          - list:
+              elements:
+                - environment: dev
+                  namespace: app-dev
+                  syncPolicy: automated    # Auto-sync dev
+                  targetRevision: main
+
+                - environment: prod
+                  namespace: app-prod
+                  syncPolicy: manual       # Manual sync prod (require approval)
+                  targetRevision: main
+
+          # Generator 2: discover apps in each environment folder
+          - git:
+              repoURL: https://github.com/your-org/devops-platform-gitops
+              revision: "{{.targetRevision}}"
+              directories:
+                - path: "environments/{{.environment}}/*"
+
+  template:
+    metadata:
+      name: "{{.environment}}-{{.path.basename}}"
+      namespace: argocd
+      labels:
+        app.kubernetes.io/name: "{{.path.basename}}"
+        app.kubernetes.io/component: application
+        environment: "{{.environment}}"
+      annotations:
+        notifications.argoproj.io/subscribe.on-deployed.slack: devops-alerts
+        notifications.argoproj.io/subscribe.on-sync-failed.slack: devops-alerts
+        notifications.argoproj.io/subscribe.on-health-degraded.slack: devops-alerts
+    spec:
+      project: applications
+
+      source:
+        repoURL: https://github.com/your-org/devops-platform-gitops
+        targetRevision: "{{.targetRevision}}"
+        path: "environments/{{.environment}}/{{.path.basename}}"
+
+        # Helm-specific values
+        helm:
+          valueFiles:
+            - values.yaml
+          parameters:
+            - name: global.environment
+              value: "{{.environment}}"
+
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{.namespace}}"
+
+      syncPolicy:
+        automated:
+          prune: "{{eq .syncPolicy \"automated\"}}"
+          selfHeal: "{{eq .syncPolicy \"automated\"}}"
+          allowEmpty: false
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - RespectIgnoreDifferences=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 5m
+
+      # Ignore differences ArgoCD shouldn't manage
+      ignoreDifferences:
+        - group: apps
+          kind: Deployment
+          jsonPointers:
+            - /spec/replicas   # HPA manages replicas, ArgoCD should not revert
+        - group: autoscaling
+          kind: HorizontalPodAutoscaler
+          jsonPointers:
+            - /spec/currentReplicas

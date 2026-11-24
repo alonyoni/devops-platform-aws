@@ -1,0 +1,69 @@
+---
+# ApplicationSet: Platform Tools
+#
+# Discovers all platform tool apps from the
+# gitops-repo/platform/ directory and creates an
+# ArgoCD Application for each subdirectory found.
+#
+# Directory layout expected in the GitOps repo:
+#   platform/
+#     ingress-nginx/     (Helm chart)
+#     cert-manager/      (Helm chart)
+#     monitoring/        (kube-prometheus-stack)
+#     jenkins/           (Jenkins Helm chart)
+
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: platform-tools
+  namespace: argocd
+  labels:
+    app.kubernetes.io/component: gitops
+    tier: platform
+spec:
+  goTemplate: true
+  goTemplateOptions:
+    - missingkey=error
+
+  generators:
+    - git:
+        repoURL: https://github.com/your-org/devops-platform-gitops
+        revision: main
+        directories:
+          - path: "platform/*"
+
+  template:
+    metadata:
+      name: "platform-{{.path.basename}}"
+      namespace: argocd
+      labels:
+        app.kubernetes.io/name: "{{.path.basename}}"
+        app.kubernetes.io/component: platform-tool
+        tier: platform
+      annotations:
+        notifications.argoproj.io/subscribe.on-deployed.slack: devops-alerts
+        notifications.argoproj.io/subscribe.on-sync-failed.slack: devops-alerts
+    spec:
+      project: platform
+      source:
+        repoURL: https://github.com/your-org/devops-platform-gitops
+        targetRevision: main
+        path: "platform/{{.path.basename}}"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "{{.path.basename}}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+          allowEmpty: false
+        syncOptions:
+          - CreateNamespace=true
+          - PrunePropagationPolicy=foreground
+          - ServerSideApply=true
+        retry:
+          limit: 3
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 5m

@@ -1,0 +1,124 @@
+---
+# Role: app-dev namespace — allow app pods to read ConfigMaps and Secrets
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-role
+  namespace: app-dev
+  labels:
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - secrets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+    verbs: ["get", "list", "watch"]
+
+---
+# RoleBinding: bind app ServiceAccount to app-role in app-dev
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-role-binding
+  namespace: app-dev
+  labels:
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: app-role
+subjects:
+  - kind: ServiceAccount
+    name: app
+    namespace: app-dev
+
+---
+# Role: app-prod namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-role
+  namespace: app-prod
+  labels:
+    app.kubernetes.io/component: rbac
+rules:
+  - apiGroups: [""]
+    resources:
+      - configmaps
+      - secrets
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+    verbs: ["get", "list", "watch"]
+
+---
+# RoleBinding: bind app ServiceAccount to app-role in app-prod
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-role-binding
+  namespace: app-prod
+  labels:
+    app.kubernetes.io/component: rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: app-role
+subjects:
+  - kind: ServiceAccount
+    name: app
+    namespace: app-prod
+
+---
+# Role: Jenkins can manage secrets in its own namespace (for credentials)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-secrets
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/name: jenkins
+rules:
+  - apiGroups: [""]
+    resources:
+      - secrets
+      - configmaps
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/exec
+      - pods/log
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources:
+      - services
+      - persistentvolumeclaims
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+# RoleBinding: Jenkins secrets role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-secrets
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/name: jenkins
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: jenkins-secrets
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: jenkins

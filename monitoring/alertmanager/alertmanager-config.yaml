@@ -1,0 +1,177 @@
+---
+# Alertmanager configuration secret
+# Load into cluster:
+#   kubectl create secret generic alertmanager-config-secret \
+#     --from-file=alertmanager.yaml=monitoring/alertmanager/alertmanager-config.yaml \
+#     -n monitoring
+#
+# The kube-prometheus-stack Helm chart reads this via:
+#   alertmanager.alertmanagerSpec.configSecret: alertmanager-config-secret
+
+global:
+  resolve_timeout: 5m
+  smtp_smarthost: "smtp.gmail.com:587"
+  smtp_from: "alerts@devops-platform.internal"
+  smtp_auth_username: "alerts@devops-platform.internal"
+  smtp_auth_password: "CHANGE_ME"       # Use a Kubernetes secret in production
+  smtp_require_tls: true
+  slack_api_url: "https://hooks.slack.com/services/CHANGE_ME"  # Slack webhook URL
+
+# ------------------------------------------------------------------
+# Templates
+# ------------------------------------------------------------------
+templates:
+  - "/etc/alertmanager/config/*.tmpl"
+
+# ------------------------------------------------------------------
+# Routing tree
+# ------------------------------------------------------------------
+route:
+  # Default receiver for anything that doesn't match a specific route
+  receiver: "slack-platform"
+  group_by: ["alertname", "namespace", "severity"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  routes:
+    # Critical alerts — page immediately, no grouping delay
+    - receiver: "pagerduty-critical"
+      matchers:
+        - severity = "critical"
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 30m
+      continue: true    # Also send to Slack
+
+    # Critical alerts → also Slack
+    - receiver: "slack-critical"
+      matchers:
+        - severity = "critical"
+      group_wait: 10s
+
+    # Warning alerts → Slack platform channel
+    - receiver: "slack-platform"
+      matchers:
+        - severity = "warning"
+        - team = "platform"
+      group_wait: 1m
+      group_interval: 10m
+      repeat_interval: 2h
+
+    # Application SLO alerts → dedicated app Slack channel
+    - receiver: "slack-application"
+      matchers:
+        - team = "application"
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 1h
+
+    # CI/CD alerts → DevOps channel
+    - receiver: "slack-cicd"
+      matchers:
+        - alertname =~ "Jenkins.*|ArgoCD.*"
+      group_wait: 30s
+      repeat_interval: 2h
+
+    # Watchdog — silence the always-firing watchdog (it only alerts when Alertmanager is missing)
+    - receiver: "null"
+      matchers:
+        - alertname = "Watchdog"
+
+    # Inhibit InfoInhibitor
+    - receiver: "null"
+      matchers:
+        - alertname = "InfoInhibitor"
+
+# ------------------------------------------------------------------
+# Inhibition rules — prevent alert spam
+# ------------------------------------------------------------------
+inhibit_rules:
+  # If a node is down, silence all pod-level alerts on that node
+  - source_matchers:
+      - alertname = "NodeDown"
+    target_matchers:
+      - alertname =~ "Pod.*|Deployment.*"
+    equal: ["instance"]
+
+  # If critical is firing for the same alert, silence the warning
+  - source_matchers:
+      - severity = "critical"
+    target_matchers:
+      - severity = "warning"
+    equal: ["alertname", "namespace"]
+
+  # Inhibit KubeAPI alerts when Prometheus itself is down
+  - source_matchers:
+      - alertname = "PrometheusDown"
+    target_matchers:
+      - job = "kube-apiserver"
+
+# ------------------------------------------------------------------
+# Receivers
+# ------------------------------------------------------------------
+receivers:
+
+  - name: "null"    # Silently drop matched alerts
+
+  - name: "slack-platform"
+    slack_configs:
+      - channel: "#devops-alerts"
+        send_resolved: true
+        icon_url: "https://avatars3.githubusercontent.com/u/3380462"
+        title: '{{ template "slack.devops.title" . }}'
+        text: '{{ template "slack.devops.text" . }}'
+        color: '{{ if eq .Status "firing" }}{{ if eq (index .Alerts 0).Labels.severity "critical" }}danger{{ else }}warning{{ end }}{{ else }}good{{ end }}'
+        actions:
+          - type: button
+            text: "Runbook"
+            url: '{{ (index .Alerts 0).Annotations.runbook }}'
+          - type: button
+            text: "Grafana"
+            url: "https://grafana.devops-platform.internal"
+          - type: button
+            text: "Silence"
+            url: '{{ template "__alert_silence_link" . }}'
+
+  - name: "slack-critical"
+    slack_configs:
+      - channel: "#devops-critical"
+        send_resolved: true
+        icon_url: "https://avatars3.githubusercontent.com/u/3380462"
+        title: ':fire: CRITICAL: {{ template "slack.devops.title" . }}'
+        text: '{{ template "slack.devops.text" . }}'
+        color: "danger"
+
+  - name: "slack-application"
+    slack_configs:
+      - channel: "#app-alerts"
+        send_resolved: true
+        title: '{{ template "slack.devops.title" . }}'
+        text: '{{ template "slack.devops.text" . }}'
+        color: '{{ if eq .Status "firing" }}warning{{ else }}good{{ end }}'
+
+  - name: "slack-cicd"
+    slack_configs:
+      - channel: "#cicd-alerts"
+        send_resolved: true
+        title: '{{ template "slack.devops.title" . }}'
+        text: '{{ template "slack.devops.text" . }}'
+
+  - name: "pagerduty-critical"
+    pagerduty_configs:
+      - routing_key: "CHANGE_ME"   # PagerDuty integration key
+        send_resolved: true
+        severity: '{{ (index .Alerts 0).Labels.severity }}'
+        description: '{{ template "pagerduty.default.description" . }}'
+        details:
+          namespace: '{{ (index .Alerts 0).Labels.namespace }}'
+          pod: '{{ (index .Alerts 0).Labels.pod }}'
+
+  - name: "email-oncall"
+    email_configs:
+      - to: "oncall@devops-platform.internal"
+        send_resolved: true
+        headers:
+          Subject: '{{ template "email.default.subject" . }}'
+        html: '{{ template "email.default.html" . }}'

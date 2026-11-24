@@ -1,0 +1,30 @@
+---
+# Sync Wave Ordering Reference
+# ArgoCD deploys resources in ascending wave order.
+# Resources in the same wave are applied concurrently.
+# ArgoCD waits for all resources in wave N to be healthy before starting wave N+1.
+#
+# Wave -1 : Root application (bootstraps everything else)
+# Wave  0 : CRDs, namespaces, cert-manager, ingress-nginx
+# Wave  1 : Monitoring stack (needs CRDs from wave 0)
+# Wave  2 : Jenkins, ArgoCD Image Updater (needs monitoring + ingress)
+# Wave  3 : Application workloads (needs all platform tools)
+#
+# To assign a wave to a resource, add this annotation:
+#   argocd.argoproj.io/sync-wave: "N"
+#
+# ──────────────────────────────────────────────────────
+# This file is documentation only — no K8s resources here
+# ──────────────────────────────────────────────────────
+#
+# Full platform boot sequence:
+#
+#  1. terraform apply         → EKS cluster, VPC, ECR, IAM
+#  2. ./scripts/bootstrap.sh  → namespaces, RBAC, StorageClasses, ArgoCD
+#  3. kubectl apply -f argocd/apps/root-app.yaml
+#     → ArgoCD takes over; deploys all platform tools in wave order
+#  4. Jenkins becomes available at jenkins.devops-platform.internal
+#  5. Configure Jenkins → push first build → image lands in ECR
+#  6. Jenkins updates environments/dev/app/values.yaml (image.tag)
+#  7. ArgoCD auto-syncs app-dev  → rolling deploy
+#  8. For prod: ArgoCD shows OutOfSync → operator clicks Sync in UI

@@ -1,0 +1,73 @@
+---
+# ClusterRoleBinding: Prometheus scraper
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-scraper
+  labels:
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/name: prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-scraper
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: monitoring
+
+---
+# ClusterRoleBinding: Cluster Autoscaler
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-autoscaler
+  labels:
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/name: cluster-autoscaler
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-autoscaler
+subjects:
+  - kind: ServiceAccount
+    name: cluster-autoscaler
+    namespace: kube-system
+
+---
+# ClusterRoleBinding: ArgoCD application controller
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argocd-application-controller
+  labels:
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/name: argocd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: argocd-application-controller
+subjects:
+  - kind: ServiceAccount
+    name: argocd-application-controller
+    namespace: argocd
+
+---
+# ClusterRoleBinding: Jenkins deploy (cluster-wide, allows deploying to any namespace)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: jenkins-deploy
+  labels:
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/name: jenkins
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: jenkins-deploy
+subjects:
+  - kind: ServiceAccount
+    name: jenkins
+    namespace: jenkins

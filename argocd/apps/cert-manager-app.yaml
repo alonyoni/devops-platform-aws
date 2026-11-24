@@ -1,0 +1,65 @@
+---
+# ArgoCD Application: cert-manager
+# Manages TLS certificates via Let's Encrypt / self-signed
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: cert-manager
+    app.kubernetes.io/component: platform-tool
+    tier: platform
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: "v1.14.4"
+    helm:
+      releaseName: cert-manager
+      values: |
+        installCRDs: true
+        replicaCount: 2
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        nodeSelector:
+          role: system
+        tolerations:
+          - key: CriticalAddonsOnly
+            operator: Exists
+        prometheus:
+          enabled: true
+          servicemonitor:
+            enabled: true
+            namespace: monitoring
+            labels:
+              release: kube-prometheus-stack
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

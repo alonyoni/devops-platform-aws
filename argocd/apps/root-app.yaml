@@ -1,0 +1,54 @@
+---
+# Root Application — App of Apps Pattern
+#
+# This single Application tells ArgoCD to watch the argocd/apps/
+# directory in the GitOps repo. Any Application or ApplicationSet
+# manifest found there will be automatically created/managed.
+#
+# Bootstrap:
+#   kubectl apply -f argocd/apps/root-app.yaml -n argocd
+#
+# After that, ArgoCD manages itself and all child apps via Git.
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root-app
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: root-app
+    app.kubernetes.io/component: gitops
+    tier: platform
+  annotations:
+    # Prevent ArgoCD from deleting this app when the manifest is removed
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+
+  source:
+    repoURL: https://github.com/your-org/devops-platform-gitops
+    targetRevision: main
+    path: argocd/apps
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      prune: true       # Delete resources removed from Git
+      selfHeal: true    # Revert manual changes in cluster
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

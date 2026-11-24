@@ -1,0 +1,147 @@
+---
+# ServiceMonitor: Application (app-dev and app-prod)
+# Prometheus auto-discovers app pods via this ServiceMonitor
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: app-monitor
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: app
+    app.kubernetes.io/component: monitoring
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - app-dev
+      - app-prod
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: app
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scrapeTimeout: 10s
+
+---
+# ServiceMonitor: Jenkins
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: jenkins-monitor
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/component: monitoring
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - jenkins
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jenkins
+  endpoints:
+    - port: http
+      path: /prometheus
+      interval: 60s
+      scrapeTimeout: 15s
+
+---
+# ServiceMonitor: ArgoCD
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: argocd-monitor
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: argocd
+    app.kubernetes.io/component: monitoring
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - argocd
+  selector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - argocd-metrics
+          - argocd-server
+          - argocd-repo-server
+          - argocd-applicationset-controller
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+
+---
+# ServiceMonitor: Ingress NGINX
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ingress-nginx-monitor
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: ingress-nginx
+    app.kubernetes.io/component: monitoring
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - ingress-nginx
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 30s
+
+---
+# ServiceMonitor: Cluster Autoscaler
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cluster-autoscaler-monitor
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: cluster-autoscaler
+    app.kubernetes.io/component: monitoring
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cluster-autoscaler
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 60s
+
+---
+# PodMonitor: Any pod with prometheus.io/scrape=true annotation
+# Catches pods that don't have a corresponding Service
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: annotated-pods
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/component: monitoring
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    any: true
+  selector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: Exists
+  podMetricsEndpoints:
+    - path: /metrics
+      port: metrics
+      interval: 30s

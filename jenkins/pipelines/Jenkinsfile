@@ -1,0 +1,587 @@
+#!/usr/bin/env groovy
+/**
+ * Declarative Pipeline: End-to-End CI/CD
+ *
+ * Stages:
+ *   1. Checkout
+ *   2. Set Build Metadata
+ *   3. Unit Tests
+ *   4. Code Quality (SonarQube)
+ *   5. Dependency Security Scan (OWASP)
+ *   6. Build Docker Image
+ *   7. Container Security Scan (Trivy)
+ *   8. Push to ECR
+ *   9. Update GitOps Repo (ArgoCD picks this up automatically)
+ *  10. Notify
+ *
+ * Branch strategy:
+ *   - feature/*  → runs up to Trivy scan, no push
+ *   - develop    → pushes image tagged :develop-<sha>
+ *   - main       → pushes image tagged :<semver> and :latest, triggers prod
+ *   - release/*  → pushes image tagged :rc-<sha>
+ */
+
+// ---------------------------------------------------------------------------
+// Pipeline-level environment
+// ---------------------------------------------------------------------------
+def IMAGE_TAG      = ""
+def ECR_REGISTRY   = ""
+def IMAGE_FULL     = ""
+def GITOPS_REPO    = "https://github.com/your-org/devops-platform-gitops.git"
+def GITOPS_DIR     = "gitops-repo"
+def APP_NAME       = "app"
+
+pipeline {
+
+    agent {
+        kubernetes {
+            label "docker"
+            defaultContainer "jnlp"
+            yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    jenkins: agent
+    pipeline: devops-platform
+spec:
+  serviceAccountName: jenkins
+  tolerations:
+    - key: CriticalAddonsOnly
+      operator: Exists
+  containers:
+    - name: jnlp
+      image: jenkins/inbound-agent:latest-jdk17
+      resources:
+        requests:
+          cpu: 200m
+          memory: 256Mi
+
+    - name: docker
+      image: docker:24-dind
+      securityContext:
+        privileged: true
+      env:
+        - name: DOCKER_TLS_CERTDIR
+          value: ""
+      resources:
+        requests:
+          cpu: 500m
+          memory: 512Mi
+        limits:
+          cpu: "2"
+          memory: 2Gi
+
+    - name: tools
+      image: alpine/k8s:1.29.2
+      command: [sleep]
+      args: [infinity]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+
+    - name: sonar-scanner
+      image: sonarsource/sonar-scanner-cli:5
+      command: [sleep]
+      args: [infinity]
+      resources:
+        requests:
+          cpu: 200m
+          memory: 512Mi
+"""
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Options
+    // -----------------------------------------------------------------------
+    options {
+        buildDiscarder(logRotator(numToKeepStr: "20"))
+        timeout(time: 60, unit: "MINUTES")
+        timestamps()
+        ansiColor("xterm")
+        disableConcurrentBuilds(abortPrevious: true)
+    }
+
+    // -----------------------------------------------------------------------
+    // Parameters (for manual or triggered builds)
+    // -----------------------------------------------------------------------
+    parameters {
+        string(
+            name: "IMAGE_TAG_OVERRIDE",
+            defaultValue: "",
+            description: "Override the image tag (leave blank to use auto-generated tag)"
+        )
+        booleanParam(
+            name: "FORCE_DEPLOY",
+            defaultValue: false,
+            description: "Force deploy even on feature branches"
+        )
+        choice(
+            name: "TARGET_ENV",
+            choices: ["dev", "prod"],
+            description: "Target deployment environment"
+        )
+    }
+
+    // -----------------------------------------------------------------------
+    // Environment variables
+    // -----------------------------------------------------------------------
+    environment {
+        AWS_REGION          = "us-east-1"
+        AWS_ACCOUNT_ID      = credentials("aws-account-id")
+        ECR_REPO_NAME       = "devops-platform/${APP_NAME}"
+        SONARQUBE_URL       = "http://sonarqube.monitoring.svc.cluster.local:9000"
+        SONARQUBE_TOKEN     = credentials("sonarqube-token")
+        GITHUB_CREDENTIALS  = credentials("github-credentials")
+        SLACK_CHANNEL       = "#devops-alerts"
+        DOCKER_BUILDKIT     = "1"
+    }
+
+    // -----------------------------------------------------------------------
+    // Stages
+    // -----------------------------------------------------------------------
+    stages {
+
+        // -------------------------------------------------------------------
+        stage("Checkout") {
+        // -------------------------------------------------------------------
+            steps {
+                checkout scm
+                script {
+                    // Set build display name
+                    def shortSha = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+                    currentBuild.displayName = "#${BUILD_NUMBER} - ${shortSha}"
+                    currentBuild.description = "Branch: ${BRANCH_NAME}"
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        stage("Set Build Metadata") {
+        // -------------------------------------------------------------------
+            steps {
+                script {
+                    def shortSha = sh(script: "git rev-parse --short HEAD", returnStdout: true).trim()
+                    def branchSafe = BRANCH_NAME.replaceAll("/", "-").toLowerCase()
+
+                    ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+                    // Determine image tag based on branch
+                    if (params.IMAGE_TAG_OVERRIDE) {
+                        IMAGE_TAG = params.IMAGE_TAG_OVERRIDE
+                    } else if (BRANCH_NAME == "main") {
+                        // Try to read semver from VERSION file; fall back to sha
+                        def version = ""
+                        if (fileExists("VERSION")) {
+                            version = readFile("VERSION").trim()
+                        }
+                        IMAGE_TAG = version ? "v${version}" : "main-${shortSha}"
+                    } else {
+                        IMAGE_TAG = "${branchSafe}-${shortSha}"
+                    }
+
+                    IMAGE_FULL = "${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}"
+
+                    echo """
+╔══════════════════════════════════════════════════╗
+║  BUILD METADATA                                  ║
+╠══════════════════════════════════════════════════╣
+║  Branch  : ${BRANCH_NAME.padRight(36)}  ║
+║  Commit  : ${shortSha.padRight(36)}  ║
+║  Tag     : ${IMAGE_TAG.padRight(36)}  ║
+║  Image   : ${IMAGE_FULL.padRight(36)}  ║
+╚══════════════════════════════════════════════════╝
+                    """
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        stage("Unit Tests") {
+        // -------------------------------------------------------------------
+            steps {
+                container("tools") {
+                    dir("app") {
+                        sh """
+                            echo "==> Installing test dependencies"
+                            # Adjust for your language/framework:
+                            # Node.js:  npm ci && npm test -- --coverage
+                            # Python:   pip install -r requirements-dev.txt && pytest --cov=. --cov-report=xml
+                            # Java:     mvn test
+                            # Go:       go test ./... -coverprofile=coverage.out
+
+                            # Example for Node.js:
+                            if [ -f package.json ]; then
+                                npm ci
+                                npm test -- --coverage --watchAll=false --ci
+                            fi
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    // Publish JUnit results
+                    junit allowEmptyResults: true, testResults: "app/**/test-results/**/*.xml"
+                    // Publish coverage
+                    publishHTML([
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: "app/coverage",
+                        reportFiles: "lcov-report/index.html",
+                        reportName: "Coverage Report"
+                    ])
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        stage("Code Quality: SonarQube") {
+        // -------------------------------------------------------------------
+            when {
+                anyOf {
+                    branch "main"
+                    branch "develop"
+                    branch pattern: "feature/*", comparator: "GLOB"
+                    branch pattern: "release/*", comparator: "GLOB"
+                }
+            }
+            steps {
+                container("sonar-scanner") {
+                    withSonarQubeEnv("SonarQube") {
+                        sh """
+                            sonar-scanner \
+                              -Dsonar.projectKey=${APP_NAME} \
+                              -Dsonar.projectName="${APP_NAME}" \
+                              -Dsonar.projectVersion=${IMAGE_TAG} \
+                              -Dsonar.sources=app/src \
+                              -Dsonar.tests=app/tests \
+                              -Dsonar.javascript.lcov.reportPaths=app/coverage/lcov.info \
+                              -Dsonar.host.url=${SONARQUBE_URL} \
+                              -Dsonar.login=${SONARQUBE_TOKEN}
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    // Wait for SonarQube quality gate result (fail build if gate fails)
+                    timeout(time: 5, unit: "MINUTES") {
+                        waitForQualityGate abortPipeline: true
+                    }
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        stage("Dependency Security Scan") {
+        // -------------------------------------------------------------------
+            steps {
+                container("tools") {
+                    dir("app") {
+                        sh """
+                            echo "==> Running OWASP Dependency Check"
+                            # Skip if no supported manifest exists
+                            if [ -f package-lock.json ] || [ -f pom.xml ] || [ -f requirements.txt ]; then
+                                dependency-check.sh \
+                                  --project "${APP_NAME}" \
+                                  --scan . \
+                                  --format "ALL" \
+                                  --out dependency-check-report \
+                                  --failOnCVSS 7 \
+                                  --nvdApiKey "" || true
+                            else
+                                echo "No supported package manifest found, skipping OWASP scan."
+                            fi
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: "app/dependency-check-report",
+                        reportFiles: "dependency-check-report.html",
+                        reportName: "OWASP Dependency Check"
+                    ])
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        stage("Build Docker Image") {
+        // -------------------------------------------------------------------
+            steps {
+                container("docker") {
+                    dir("app") {
+                        sh """
+                            echo "==> Building Docker image: ${IMAGE_FULL}"
+                            docker build \
+                              --build-arg BUILD_DATE=\$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+                              --build-arg VCS_REF=\$(git rev-parse HEAD) \
+                              --build-arg VERSION=${IMAGE_TAG} \
+                              --cache-from ${IMAGE_FULL} \
+                              --tag ${IMAGE_FULL} \
+                              --tag ${ECR_REGISTRY}/${ECR_REPO_NAME}:latest \
+                              --file Dockerfile \
+                              .
+
+                            echo "==> Image size:"
+                            docker image inspect ${IMAGE_FULL} \
+                              --format '{{.Size}}' \
+                              | awk '{printf "%.2f MB\\n", \$1/1024/1024}'
+                        """
+                    }
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        stage("Container Security Scan: Trivy") {
+        // -------------------------------------------------------------------
+            steps {
+                container("docker") {
+                    sh """
+                        echo "==> Running Trivy vulnerability scan"
+                        # Install trivy in the docker container
+                        wget -qO- https://github.com/aquasecurity/trivy/releases/download/v0.49.1/trivy_0.49.1_Linux-64bit.tar.gz \
+                          | tar xz -C /usr/local/bin trivy
+
+                        trivy image \
+                          --format table \
+                          --exit-code 0 \
+                          --severity LOW,MEDIUM \
+                          ${IMAGE_FULL}
+
+                        # Fail build on HIGH/CRITICAL vulnerabilities
+                        trivy image \
+                          --format json \
+                          --output trivy-report.json \
+                          --exit-code 1 \
+                          --severity HIGH,CRITICAL \
+                          --ignore-unfixed \
+                          ${IMAGE_FULL}
+                    """
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: "trivy-report.json", allowEmptyArchive: true
+                    publishHTML([
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: ".",
+                        reportFiles: "trivy-report.json",
+                        reportName: "Trivy Security Report"
+                    ])
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        stage("Push to ECR") {
+        // -------------------------------------------------------------------
+            when {
+                anyOf {
+                    branch "main"
+                    branch "develop"
+                    branch pattern: "release/*", comparator: "GLOB"
+                    expression { return params.FORCE_DEPLOY }
+                }
+            }
+            steps {
+                container("docker") {
+                    sh """
+                        echo "==> Authenticating to ECR"
+                        aws ecr get-login-password \
+                          --region ${AWS_REGION} \
+                          | docker login \
+                              --username AWS \
+                              --password-stdin ${ECR_REGISTRY}
+
+                        echo "==> Pushing image: ${IMAGE_FULL}"
+                        docker push ${IMAGE_FULL}
+
+                        # Also push :latest on main branch
+                        if [ "${BRANCH_NAME}" = "main" ]; then
+                            docker push ${ECR_REGISTRY}/${ECR_REPO_NAME}:latest
+                            echo "==> Also pushed :latest tag"
+                        fi
+
+                        echo "==> Image digest:"
+                        docker inspect --format='{{index .RepoDigests 0}}' ${IMAGE_FULL}
+                    """
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        stage("Update GitOps Repo") {
+        // -------------------------------------------------------------------
+            when {
+                anyOf {
+                    branch "main"
+                    branch "develop"
+                    branch pattern: "release/*", comparator: "GLOB"
+                    expression { return params.FORCE_DEPLOY }
+                }
+            }
+            steps {
+                container("tools") {
+                    withCredentials([usernamePassword(
+                        credentialsId: "github-credentials",
+                        usernameVariable: "GIT_USER",
+                        passwordVariable: "GIT_TOKEN"
+                    )]) {
+                        script {
+                            // Determine target environment from branch
+                            def targetEnv = "dev"
+                            if (BRANCH_NAME == "main" || BRANCH_NAME.startsWith("release/")) {
+                                targetEnv = params.TARGET_ENV
+                            }
+
+                            sh """
+                                echo "==> Cloning GitOps repository"
+                                git clone https://\${GIT_USER}:\${GIT_TOKEN}@github.com/your-org/devops-platform-gitops.git ${GITOPS_DIR}
+                                cd ${GITOPS_DIR}
+
+                                git config user.email "jenkins@devops-platform.internal"
+                                git config user.name "Jenkins CI"
+
+                                echo "==> Updating image tag to ${IMAGE_TAG} in ${targetEnv} environment"
+                                # Use yq to update the image tag in the Helm values file
+                                yq e '.image.tag = "${IMAGE_TAG}"' \
+                                    -i environments/${targetEnv}/${APP_NAME}/values.yaml
+
+                                # Also update the full image repository if needed
+                                yq e '.image.repository = "${ECR_REGISTRY}/${ECR_REPO_NAME}"' \
+                                    -i environments/${targetEnv}/${APP_NAME}/values.yaml
+
+                                echo "==> Changes to be committed:"
+                                git diff
+
+                                git add environments/${targetEnv}/${APP_NAME}/values.yaml
+
+                                git commit -m "ci: update ${APP_NAME} image to ${IMAGE_TAG} [${targetEnv}]
+
+Triggered by Jenkins build #${BUILD_NUMBER}
+Branch: ${BRANCH_NAME}
+Commit: \$(git -C .. rev-parse HEAD)
+Pipeline: ${BUILD_URL}"
+
+                                git push origin main
+
+                                echo "==> GitOps repo updated. ArgoCD will sync automatically."
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------
+        stage("Verify Deployment") {
+        // -------------------------------------------------------------------
+            when {
+                allOf {
+                    anyOf {
+                        branch "main"
+                        branch "develop"
+                    }
+                    not { expression { return params.FORCE_DEPLOY } }
+                }
+            }
+            steps {
+                container("tools") {
+                    script {
+                        def targetEnv = BRANCH_NAME == "main" ? params.TARGET_ENV : "dev"
+                        sh """
+                            echo "==> Waiting for ArgoCD to sync (up to 5 minutes)"
+                            sleep 30
+
+                            echo "==> Checking rollout status in ${targetEnv}"
+                            kubectl rollout status deployment/${APP_NAME} \
+                              --namespace app-${targetEnv} \
+                              --timeout=300s \
+                              || echo "WARNING: Deployment status check timed out. Check ArgoCD UI."
+
+                            echo "==> Current pods in app-${targetEnv}:"
+                            kubectl get pods -n app-${targetEnv} -l app.kubernetes.io/name=${APP_NAME}
+                        """
+                    }
+                }
+            }
+        }
+
+    } // end stages
+
+    // -----------------------------------------------------------------------
+    // Post actions
+    // -----------------------------------------------------------------------
+    post {
+        always {
+            script {
+                // Clean up workspace
+                cleanWs()
+            }
+        }
+
+        success {
+            script {
+                def color   = "good"
+                def message = """
+:white_check_mark: *Pipeline Succeeded*
+*Job:*   ${JOB_NAME}
+*Build:* #${BUILD_NUMBER}
+*Branch:* ${BRANCH_NAME}
+*Image:* ${IMAGE_TAG}
+*Duration:* ${currentBuild.durationString}
+*URL:* ${BUILD_URL}
+                """.stripIndent()
+
+                slackSend(
+                    channel: SLACK_CHANNEL,
+                    color: color,
+                    message: message
+                )
+            }
+        }
+
+        failure {
+            script {
+                def color   = "danger"
+                def message = """
+:x: *Pipeline Failed*
+*Job:*   ${JOB_NAME}
+*Build:* #${BUILD_NUMBER}
+*Branch:* ${BRANCH_NAME}
+*Stage Failed:* ${currentBuild.currentResult}
+*Duration:* ${currentBuild.durationString}
+*URL:* ${BUILD_URL}
+                """.stripIndent()
+
+                slackSend(
+                    channel: SLACK_CHANNEL,
+                    color: color,
+                    message: message
+                )
+            }
+        }
+
+        unstable {
+            slackSend(
+                channel: SLACK_CHANNEL,
+                color: "warning",
+                message: ":warning: Pipeline Unstable: ${JOB_NAME} #${BUILD_NUMBER} — ${BUILD_URL}"
+            )
+        }
+    }
+
+} // end pipeline

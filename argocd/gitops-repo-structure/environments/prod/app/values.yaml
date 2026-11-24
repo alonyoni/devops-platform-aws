@@ -1,0 +1,85 @@
+# GitOps values for app in prod environment
+# Jenkins CI updates image.tag on main branch merges.
+# ArgoCD sync for prod is set to MANUAL — requires explicit approval in ArgoCD UI.
+
+replicaCount: 3
+
+image:
+  repository: "123456789012.dkr.ecr.us-east-1.amazonaws.com/devops-platform/app"
+  tag: "latest"          # <- Jenkins updates this value
+  pullPolicy: Always
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  host: app.devops-platform.com
+  tls: true
+  tlsSecret: app-prod-tls
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilizationPercentage: 60
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: "25%"
+
+env:
+  - name: NODE_ENV
+    value: "production"
+  - name: LOG_LEVEL
+    value: "info"
+  - name: PORT
+    value: "8080"
+
+configMap:
+  APP_NAME: "devops-platform-app"
+  ENVIRONMENT: "prod"
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  failureThreshold: 3
+  timeoutSeconds: 5
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8080
+  initialDelaySeconds: 15
+  periodSeconds: 5
+  failureThreshold: 3
+  timeoutSeconds: 3
+
+# Rolling update strategy — zero downtime
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 1
+    maxUnavailable: 0
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+global:
+  environment: prod

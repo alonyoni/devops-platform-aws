@@ -1,0 +1,36 @@
+{{/* Slack title template */}}
+{{ define "slack.devops.title" -}}
+  [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}]
+  {{ .GroupLabels.SortedPairs.Values | join " " }}
+  {{ if gt (len .CommonLabels) (len .GroupLabels) -}}
+    ({{ with .CommonLabels.Remove .GroupLabels.Names }}{{ .Values | join " " }}{{ end }})
+  {{- end }}
+{{- end }}
+
+{{/* Slack body text template */}}
+{{ define "slack.devops.text" -}}
+  {{ range .Alerts -}}
+  *Alert:* {{ .Annotations.summary }}{{ if .Labels.severity }} - `{{ .Labels.severity }}`{{ end }}
+  *Description:* {{ .Annotations.description }}
+  *Namespace:* {{ .Labels.namespace }}
+  *Details:*
+    {{ range .Labels.SortedPairs }} • *{{ .Name }}:* `{{ .Value }}`
+    {{ end }}
+  {{ end }}
+{{- end }}
+
+{{/* Silence link */}}
+{{ define "__alert_silence_link" -}}
+  {{ .ExternalURL }}/#/silences/new?filter=%7B
+  {{- range .CommonLabels.SortedPairs -}}
+    {{- if ne .Name "alertname" -}}
+      {{- .Name }}%3D"{{- .Value -}}"%2C%20
+    {{- end -}}
+  {{- end -}}
+  alertname%3D"{{ .CommonLabels.alertname }}"%7D
+{{- end }}
+
+{{/* PagerDuty description */}}
+{{ define "pagerduty.default.description" }}
+  {{ .CommonAnnotations.summary }}
+{{ end }}

@@ -1,0 +1,45 @@
+---
+# ConfigMap: Platform Overview Dashboard
+# The grafana-sidecar watches for ConfigMaps with label grafana_dashboard=1
+# and automatically loads them into Grafana without a restart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-platform-overview
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: dashboard
+  annotations:
+    grafana_folder: "Platform"
+data:
+  platform-overview.json: |-
+    # Loaded from monitoring/grafana/dashboards/platform-overview-dashboard.json
+    # The actual JSON is embedded by the bootstrap script or CI/CD pipeline.
+    # To apply manually:
+    #   kubectl create configmap grafana-dashboard-platform-overview \
+    #     --from-file=platform-overview.json=monitoring/grafana/dashboards/platform-overview-dashboard.json \
+    #     -n monitoring \
+    #     --dry-run=client -o yaml | kubectl apply -f -
+
+---
+# ConfigMap: Application SLO Dashboard
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-app-slo
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: dashboard
+  annotations:
+    grafana_folder: "Application"
+data:
+  app-slo.json: |-
+    # Loaded from monitoring/grafana/dashboards/application-slo-dashboard.json
+    # kubectl create configmap grafana-dashboard-app-slo \
+    #   --from-file=app-slo.json=monitoring/grafana/dashboards/application-slo-dashboard.json \
+    #   -n monitoring \
+    #   --dry-run=client -o yaml | kubectl apply -f -

@@ -1,0 +1,25 @@
+---
+# ArgoCD Install Manifest
+# Source: https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+# We use a Kustomize overlay approach — this file patches the upstream install.
+#
+# To install: kubectl apply -k argocd/install/
+# Or via Helm: see argocd/install/helm-values.yaml
+
+# This is intentionally a reference file.
+# Use one of the two methods below:
+#
+# METHOD 1 — kubectl (raw manifests):
+#   kubectl create namespace argocd
+#   kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.10.1/manifests/install.yaml
+#   kubectl apply -n argocd -f argocd/install/argocd-cm-patch.yaml
+#   kubectl apply -n argocd -f argocd/install/argocd-rbac-cm.yaml
+#
+# METHOD 2 — Helm (recommended, used by bootstrap.sh):
+#   helm repo add argo https://argoproj.github.io/argo-helm
+#   helm repo update
+#   helm install argocd argo/argo-cd \
+#     --namespace argocd \
+#     --create-namespace \
+#     --values argocd/install/helm-values.yaml \
+#     --version 6.7.2

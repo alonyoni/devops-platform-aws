@@ -1,0 +1,59 @@
+---
+# PDB: Ensure at least 1 ArgoCD server pod is always available during disruptions
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: argocd-server-pdb
+  namespace: argocd
+  labels:
+    app.kubernetes.io/component: pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
+
+---
+# PDB: Prometheus — always keep 1 replica
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: prometheus-pdb
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/component: pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+
+---
+# PDB: Grafana — always keep 1 replica
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: grafana-pdb
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/component: pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+
+---
+# PDB: app-prod — keep at least 50% of replicas during rolling updates
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: app-prod-pdb
+  namespace: app-prod
+  labels:
+    app.kubernetes.io/component: pdb
+spec:
+  maxUnavailable: "50%"
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: app
